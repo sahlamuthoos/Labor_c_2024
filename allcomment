@@ -1,0 +1,685 @@
+This is iesisr.c #include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/delay.h>
+#include <stdio.h>
+#include "iesusart.h"
+
+#define OR_HEARTBEAT PORTB
+#define OP_HEARTBEAT PB5
+#define DR_HEARTBEAT DDRB
+#define DP_HEARTBEAT DDB5
+
+// We want to toggle the LED every 0.5s.
+// In every second, 16E6/256=62500 interrupts are fired.
+// In every half-second 62500/2=31250 ticks are fired.
+uint16_t cnt = 0;
+ISR(TIMER1_COMPA_vect) {
+  cnt+=1;
+  
+}
+
+void setupTimer01() {
+  cli();                   // Disable interrupts!
+  TCCR1B |= (1 << CS10);   // Prescaler: 1 => 16E6 ticks/second
+  TCCR1B |= (1 << WGM12);  // Use Timer 1 in CTC-mode
+  TIMSK1 |= (1 << OCIE1A); // Enable compare-match-interrupt for OCR1A
+  OCR1A = 255;             // Every 16E6/256 ticks COMPA_vect is fired.
+                           // This equals an (non-existent) 512-clock-
+                           // divisor. We need this information for
+                           // later calculations.
+                           // BTW: Keep in mind that there is one more
+                           // OCR-register for timer 1, which you can
+                           // use to do some more neat stuff.
+                           // BTW^2: Remember that OCR1[A|B] are 16 bit!
+  sei();                   // Enable interrupts!
+}
+
+
+this is main.c#include <avr/io.h>
+#include "iesusart.h"
+#include "iesmotors.h"
+#include <util/delay.h>
+#include "iesadc.h"
+#include <stdio.h>
+#include "iessreg.h"
+#include "iesisr.h"
+#include "motors.h"
+
+
+
+ int main(void) {
+	initial();
+	ADC_init();
+    //Setup everything
+    setup_ddr_all();
+     //Allocate 1 byte in memory/on heap for a representation (model)
+     //of the register and clear the contents directly, and update
+     //everything accordingly.
+    srr_t *regmdl = malloc(sizeof(srr_t));
+    clear(regmdl);
+    srr_t last_model_state = *regmdl;
+    unsigned char strbuff[sizeof(ADCMSG) + 15]; 
+    // WTF, why + 15? Oo
+    // Just to make things clear: You have to be extremely careful with
+    // the size of the stringbuffer. Better safe than sorry! But memory
+    // as well as time are so so so precious!
+    uint16_t adcval0 = 0;
+    uint16_t adcval1 = 0;
+    uint16_t adcval2 = 0;
+    short middle=0;
+    short left=0;
+    short right=0;
+    char lastright =0;
+    
+   setupTimer01(); 
+   int counter=0;
+   char startfeld=0;
+  char input=0;
+  unsigned char some_letter = 'A' - 1;
+  char modus=0;
+  char correctright=0;
+  char correctleft=0;
+ 
+
+	while (1) {
+		adcval0 = ADC_read_avg(ADMUX_CHN_ADC0, ADC_AVG_WINDOW);
+        adcval1 = ADC_read_avg(ADMUX_CHN_ADC1, ADC_AVG_WINDOW);
+        adcval2 = ADC_read_avg(ADMUX_CHN_ADC2, ADC_AVG_WINDOW);
+        middle=adcval1 > 500;
+        right=adcval0 > 450;
+        left=adcval2 > 350;
+		update_model(regmdl,middle,left,right);
+        if (*regmdl != last_model_state) {
+           update_hardware(regmdl);
+           last_model_state = *regmdl;
+        }
+        
+        input=USART_receiveByte();
+        if(input=='S'){
+			modus='S';
+		}else if((input=='P')&&(modus=='S')){
+			modus='P';
+			}
+			else if((input=='T')&&((modus=='S')||(modus=='P'))){
+			modus='T';
+			}else if((input=='H')&&(modus=='T')){
+			modus=='H';
+			}
+			else if (input=='E'){
+			modus='E';
+			}
+		if(modus=='S'){
+        if ((middle && right && left)){			
+			if (cnt>1000 && !(startfeld)){
+				 counter++;
+				if(counter==1){
+					USART_print("Currently I go round one\n");
+			    }
+			    
+			   
+			    if(counter==2){
+					USART_print("YEAH YEAH,done first  lap, feeling proud,going for loap 2/3\n");
+			    }
+			    if(counter==3){
+					USART_print("YEAH YEAH,done 2nd lap, feeling proud,going for loap 3/3\n");
+			    }
+			    startfeld=1;
+				if(counter >3){
+					stop();
+					USART_print("Finally finished,It's over and done now,after Seconds \n");
+					return 0;
+		        } 
+             }
+		 }
+		 else{
+			 cnt=0;
+			 startfeld=0;
+		 }
+		
+        if (middle) {
+            forward();
+            correctright=0;
+			 correctleft=0;
+            
+        } else if (right) {
+			if(correctright){
+				turnRight();
+			}else{
+			 correctright=1;
+			 correctleft=0;
+			 moveRight(); 
+			 }
+			
+        } else if (left) {
+			if(correctleft){
+				turnLeft();
+			}else{
+			 correctleft=1;
+			 correctright=0;
+			 moveLeft(); 
+			 }
+			
+			
+        } 
+        
+        
+        else if(!(middle)&&!(left)&&!(right)){
+			 
+        if(lastright){
+			correctright=1;
+			turnRight();
+		}
+		else{
+			turnLeft();
+			correctleft=1;
+			}
+		}
+		if(right || left){
+			if(right){
+				lastright=1;
+			}else{
+				lastright=0;
+			}
+   }
+  }
+  if(modus=='T'){
+	  rotateClockwise();
+	  
+	  USART_print("LalaLa \n");
+  }
+  
+  if(modus=='H'){
+	  stop();
+  }
+  if(modus=='P'){
+	  stop();
+	  USART_print("Paused ........zzzzz ....P agein to unpause me\n");
+	 // if(input=='P'){
+		//  forward();
+	 // }
+	  
+	  
+  }
+  
+}
+    return 0;
+}
+
+this is iesusart.c /**
+ * @file iesusart.c
+ * @brief Basic serial communication via USART for ATMEGA328
+ * @version 0.1
+ * @date 2021-06-08
+ */
+
+#include "iesusart.h"
+#include <avr/io.h>
+
+/**
+ * @brief 
+ * Reads a single byte out of the USART receive buffer.
+ * A good way to use this would be calling it from an receive interrupt service routine
+ * @return unsigned char (received byte)
+ */
+unsigned char USART_receiveByte(void)
+{
+    // Wait for data to be received
+    if(!(UCSR0A & (1 << RXC0))) {
+		return 0;
+        // Busy waiting! zzzZZZzzzZZZzzz
+        //USART_print=
+    }  
+    else{  
+    // Return received data from buffer
+    return UDR0;
+}
+}
+
+/**
+ * @brief Writes a single byte to the USART transmit buffer
+ * @param data Byte that shall be transmitted
+ */
+void USART_transmitByte(unsigned char data)
+{
+    // Wait for empty transmit buffer
+    while (!(UCSR0A & (1 << UDRE0))) {
+        // Busy waiting! zzzZZZzzzZZZzzz
+    }
+    // Put data into buffer, send the data
+    UDR0 = data;
+}
+
+/**
+ * @brief Transmittes a string (char by char) until '\0’ is reached
+ */
+void USART_print(const char *c)
+{
+    while (*c != '\0') {
+        USART_transmitByte(*c);
+        c++;
+    }
+}
+
+/**
+ * @brief Sets up the USART port (The USART baudrate register)
+ * @param ubrr Content to write into the UBRR register
+ */
+void USART_init(unsigned long ubrr)
+{
+    // Set baud rate, high byte first
+    UBRR0H = (unsigned char) (ubrr >> 8);
+    // Set baud rate, low byte second
+    UBRR0L = (unsigned char) ubrr;
+    // Enable receiver/transmitter
+    UCSR0B = (1 << RXEN0) | (1 << TXEN0);
+    // Frame format: 8 data, 2 stop bits
+    UCSR0C = (1 << USBS0) | (3 << UCSZ00);
+    /* Transmit something right after initialization to overcome the lagg at the
+     * start of a simulation in SimulIDE.
+    */
+   USART_print("Same sory,different student..........boring,IES needs to refactor this course");
+}
+this is iesreg.c #include <avr/io.h>
+#include <util/delay.h>
+#include <stdlib.h>
+#include "iesusart.h"
+#include "iessreg.h"
+
+// Robot function/peripheral RIGHT LF.
+#define DR_LF_R DDRC
+#define DP_LF_R DDC0
+#define IR_LF_R PINC
+#define IP_LF_R PINC0
+
+// Robot function/peripheral MIDDLE LF.
+#define DR_LF_M DDRC
+#define DP_LF_M DDC1
+#define IR_LF_M PINC
+#define IP_LF_M PINC1
+
+// Robot function/peripheral LEFT LF.
+#define DR_LF_L DDRC
+#define DP_LF_L DDC2
+#define IR_LF_L PINC
+#define IP_LF_L PINC2
+
+// Robot funktion/peripheral SR
+#define REGWIDTH 3
+
+// SR clock
+#define DR_SR_CLK  DDRD
+#define DP_SR_CLK  DDD4
+#define OR_SR_CLK  PORTD
+#define OP_SR_CLK  PORTD4
+
+// SR data
+#define DR_SR_DATA DDRB
+#define DP_SR_DATA DDB2
+#define OR_SR_DATA PORTB
+#define OP_SR_DATA PORTB2
+
+#define SR_LED_YELLOW 2
+#define SR_LED_GREEN  1
+#define SR_LED_BLUE   0
+
+typedef unsigned char srr_t;
+typedef unsigned char cntv8_t;
+
+/**
+  Clocks the real hardware -- whenever this is called,
+  a rising edge on PD4 is generated.
+*/
+void clk() {
+    OR_SR_CLK &= ~(1 << OP_SR_CLK);
+    OR_SR_CLK |= (1 << OP_SR_CLK);
+    // There may be dragons in here. How long has a
+    // clock pulse to be high? How do you know?
+    OR_SR_CLK &= ~(1 << OP_SR_CLK);
+}
+
+/**
+  Writes the in-memory-representation (the "model") of
+  the robot's shift-register to the real hardware.
+*/
+void update_hardware(srr_t *regmdl) {
+    for(cntv8_t i = 0; i < REGWIDTH; i++) {
+        unsigned char position_set = (*regmdl & (1 << i));
+        if (position_set) {
+           OR_SR_DATA |= (1 << OP_SR_DATA);
+          
+        } else {
+           OR_SR_DATA &= ~(1 << OP_SR_DATA);
+        }
+        clk();
+    }
+}
+
+/**
+  Updates the model (memory), that represents the
+  robot's shift-register.
+*/
+void update_model(srr_t *regmdl,short middle,short left,short right) {
+
+    if (right) {
+        *regmdl |= (1 << SR_LED_YELLOW);
+    } else {
+        *regmdl &= ~(1 << SR_LED_YELLOW);
+    }
+
+    if (middle) {
+        *regmdl |= (1 << SR_LED_GREEN);
+    } else {
+        *regmdl &= ~(1 << SR_LED_GREEN);
+    }
+
+    if (left) {
+        *regmdl |= (1 << SR_LED_BLUE);
+    } else {
+        *regmdl &= ~(1 << SR_LED_BLUE);
+    }
+
+}
+
+/**
+  Clears the in-memory-representation (the "model") of
+  the robot's shift-register.
+*/
+void clear(srr_t *regmdl) {
+    *regmdl = 0;
+    update_hardware(regmdl);
+}
+
+/**
+  Sets data directions.
+*/
+void setup_ddr_all() {
+    // Set Data Direction Register B2 as output.
+    DR_SR_DATA |= 1 << DP_SR_DATA;
+
+    // Set Data Direction Register D4 as output. To D4,
+    // the CLK-line of the robot's shift-register is connected.
+    DR_SR_CLK |= 1 << DP_SR_CLK;
+
+    // Set Data Direction Register C[0|1|2] as input. To these pins,
+    // the robot's line-infrared-reflection-sensors are attached.
+    DR_LF_L &= ~(1 << DP_LF_L);
+    DR_LF_R &= ~(1 << DP_LF_R);
+    DR_LF_M &= ~(1 << DP_LF_M);
+}
+
+
+
+this is iesadc.c 
+#include "iesadc.h"
+/** Initializes the ADC-unit. There is ONE single ADC unit on the
+ * microcontroller, but different "channels" (input pins) can be
+ * connected to the ADC via a MUX-register. The s4etup of the ADC is
+ * done in this method, the MUX is used in the read-function.
+ */
+void ADC_init(void) {
+  // The following lines still let the digital input registers enabled,
+  // though that's not a good idea (energy-consumption).
+ DR_ADC0 &= ~(1 << DP_ADC0);
+    DR_ADC1 &= ~(1 << DP_ADC1);
+    DR_ADC2 &= ~(1 << DP_ADC2);
+
+  // Klare Verhältnisse erstma!
+  ADMUX = 0;
+
+  // Sets AVcc as the ADC's voltage source and as the reference,
+  // while that voltage stems from the AREF-pin (5V when the robots is
+  //  powered by batteries, lower otherwise).
+  ADMUX |= (1<<REFS0);
+
+  // This sets how fast (and: accurate) the ADC can run.
+  // All these bits set to 1 set a sysclock-division of 128,
+  // so the ADC can run with up to 125 kHz.
+  ADCSRA |= (1<<ADPS2) | (1<<ADPS1) | (1<<ADPS0);
+
+  // This enables/really turns on the ADC. 
+  ADCSRA |= (1<<ADEN);
+
+  // The following lines of code start a single measurement in single
+  // conversion mode. Needed once to "warm up" the ADC. The contents
+  // of the result-register ADCW are ignored because they are not
+  // reliable yet (until warm-up is done). ADSC goes to 0 when the
+  // conversion is done. The first conversion is not only inreliable,
+  // but also 25 ADC-cycles long, while the next conversions are around
+  // 13 cycles long.
+  ADCSRA |= (1<<ADSC);
+  while (ADCSRA & (1<<ADSC)) {
+    // zzzZZZzzzZZZzzz ... take a sleep until measurement done.
+  }
+  ADCW;
+}
+
+/** We have a 10-bit-ADC, so somewhere in memory we have to read that
+ * 10 bits.  Due to this, this function returns a 16-bit-value.
+ */
+uint16_t ADC_read(uint8_t channel) {
+  // Remember to have the ADC initialized!
+
+  // The following line does set all ADMUX-MUX-pins to 0, disconnects
+  // all channels from the MUX.
+  ADMUX &= ~(ADMUX_CHN_ALL);
+  ADMUX |= channel;
+
+  // We start a single measurement and then busy-wait until
+  // the ADSC-bit goes to 0, signalling the end of the measurement.
+  ADCSRA |= (1<<ADSC);
+  while (ADCSRA & (1<<ADSC)) {
+    // zzzZZZzzzZZZzzz ... take a sleep until measurement done.
+  }
+  // Again, a pointer-airthmetical expression. the ADC-register has a
+  // lower and a higher portion, but
+  return ADCW;
+}
+
+/** Used to read multiple measurements to reduce noise.
+ */
+uint16_t ADC_read_avg(uint8_t channel, uint8_t nsamples) {
+  // How large does our datatype need to be?
+  uint32_t sum = 0;
+
+  for (uint8_t i = 0; i < nsamples; ++i ) {
+    sum += ADC_read(channel);
+  }
+
+  return (uint16_t)( sum / (float)nsamples );
+}
+
+    
+this is iesmotors.c #include "iesmotors.h"
+
+/**
+  Sets up timer 0 (8-bit-timer)
+*/
+void setupTimer0() {
+  // Disable all interrupts
+  cli();
+  // Set prescaler to 64, cf. datasheet for TCCR0B
+  // (TCCR0B: Timer/Counter Control Register 0 B)
+  TCCR0B = 0;
+  TCCR0B |= (1 << CS00) | (1 << CS01);
+  // Set waveform generation mode to Fast PWM, frequency = F_CPU / (PRESCALER * 2^8)
+  TCCR0A = 0;
+  TCCR0A |= (1 << WGM00) | (1 << WGM01);
+  // Re-enable all interrupts
+  sei();
+}
+
+/**
+  Sets duty-cycle at pin PD5 or PD6 (OC0A or OC0B) to a value
+  (0 - 255 = 0% - 100%).
+
+  Timer0 needs to be setup before usage!
+
+  The required pins also need to be set as output first. That
+  setup is NOT done in the respective timer-setup-method!
+*/
+void setDutyCycle(uint8_t pin, uint8_t value)
+{
+  // Suggestion to handle PD6 - note the code-clones wrt. PD5 below!
+  // Code-clones are extraordinary f cky! Correct this (tricky though
+  // due to the PP-macros, which you cannot simply pass to functions)!
+  // (But PP-macros can help you here....)
+  if (pin == PD6) {
+    if (value == 0) {
+      TCCR0A &= ~(1 << COM0A1) & ~(1 << COM0A0);  // Normal port operation mode
+      PORTD &= ~(1 << PD6);                       // PD6 LOW, equals 0% duty,
+    }                                             // timer disconnected
+    else if (value == 255) {
+      TCCR0A &= ~(1 << COM0A1) & ~(1 << COM0A0);  // Normal port operation mode
+      PORTD |= (1 << PD6);                        // PD6 HIGH, equals 100% duty,
+    }                                             // timer disconnected
+    else {
+      TCCR0A |= (1 << COM0A1);                    // OC0A to LOW on Compare Match,
+      TCCR0A &= ~(1 << COM0A0);                   // to HIGH at BOTTOM (non-inverting mode)
+      OCR0A = value;                              // generates sequences of 1-0-1-0...
+    }                                             // for certain periods of time
+  }
+
+  if (pin == PD5) {
+    if (value == 0) {
+      TCCR0A &= ~(1 << COM0B1) & ~(1 << COM0B0);
+      PORTD &= ~(1 << PD5);
+    }
+    else if (value == 255) {
+      TCCR0A &= ~(1 << COM0B1) & ~(1 << COM0B0);
+      PORTD |= (1 << PD5);
+    }
+    else {
+      TCCR0A |= (1 << COM0B1);
+      TCCR0A &= ~(1 << COM0B0);
+      OCR0B = value;
+    }
+  }
+}
+this is motors.c  
+ # include "motors.h"
+ #include "iesmotors.h"
+ #include "iesusart.h"
+ void initial() {
+    // Set Data Direction Register C [0|1|2| as input.
+    DDRC &= ~((1 << DDC0) | (1 << DDC1) | (1 << DDC2));
+
+    // Initialize UART for debugging
+    USART_init(UBRR_SETTING);
+
+    // Set PD5 and PD6 as output (EN[A|B]!)
+    DDRD |= (1 << PD5) | (1 << PD6);
+
+    // Set PD7 as output (IN1)
+    DDRD |= (1 << PD7);
+
+    // Set PB0, PB1, and PB3 as output (IN[2|3|4])
+    DDRB |= (1 << PB0) | (1 << PB1) | (1 << PB3);
+
+    // Make PWM work on PD[5|6]
+    setupTimer0();
+
+    // Initial duty cycles for PD5/PD6
+    setDutyCycle(PD5, 155);
+    setDutyCycle(PD6, 155);
+    }
+   
+ 
+ void forward(){
+	PORTB &= ~(1 << PB0);
+    PORTB &= ~(1 << PB1);
+	PORTD |= (1 << PD7);
+    PORTB |= (1 << PB3);
+    setDutyCycle(PD6, 170);
+	setDutyCycle(PD5, 175);
+    
+    }
+    void moveBackward(){
+	PORTD &= ~(1 << PD7);
+    PORTB &= ~(1 << PB3);
+	PORTB |= (1 << PB0);
+    PORTB |= (1 << PB1);
+
+    }
+    void stop(){
+	// Both sides stop backward
+    PORTB &= ~(1 << PB0);
+    PORTB &= ~(1 << PB1);
+	// Both sides stop
+    PORTD &= ~(1 << PD7);
+    PORTB &= ~(1 << PB3);
+
+    
+   }
+    void turnRight(){
+	setDutyCycle(PD6, 200);
+	setDutyCycle(PD5, 200);
+	PORTD |= (1 << PD7);
+    PORTB &= ~(1 << PB3);
+	PORTB &= ~(1 << PB0);
+    
+    PORTB |= (1 << PB1);
+
+
+   }
+    void turnLeft(){
+	setDutyCycle(PD6, 200);
+    setDutyCycle(PD5, 200);
+	PORTD &= ~(1 << PD7);
+    PORTB |= (1 << PB3);
+	PORTB |= (1 << PB0);
+    
+    PORTB &= ~(1 << PB1);
+
+
+  }
+   void leftmotoroff(){
+	PORTD &= ~(1 << PD7);
+       
+   }
+   void leftBackward(){
+	PORTB |= (1 << PB0);
+   }
+    void moveRight(){
+	setDutyCycle(PD6, 170);
+	setDutyCycle(PD5, 170);
+	PORTD |= (1 << PD7);
+    PORTB &= ~(1 << PB3);
+	PORTB &= ~(1 << PB0);
+    
+    PORTB |= (1 << PB1);
+
+
+   }
+   void moveLeft(){
+	setDutyCycle(PD6, 170);
+    setDutyCycle(PD5, 170);
+	PORTD &= ~(1 << PD7);
+    PORTB |= (1 << PB3);
+	PORTB |= (1 << PB0);
+    
+    PORTB &= ~(1 << PB1);
+
+
+  }
+   
+
+
+  void rightmotoroff(){
+	PORTB &= ~(1 << PB1); 
+  } 
+  void rightBackward(){
+	 PORTB |= (1 << PB1);
+  }
+  void rotateClockwise(){
+	   setDutyCycle(PD6, 0);
+	setDutyCycle(PD5, 255);
+	PORTD |= (1 << PD7);
+	//link Backward 0
+	 PORTB &= ~(1 << PB0);
+	
+	//right motor forward
+	PORTB |= (1 << PB3);
+	
+	 // right backward 0
+	 PORTB &= ~(1 << PB1);
+	  
